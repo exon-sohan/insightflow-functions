@@ -1,0 +1,22 @@
+# Node modules
+node_modules/
+package-lock.json
+
+# Azure Functions
+local.settings.json
+.vscode/
+.funcignore
+__azurite_db*__.json
+__blobstorage__/
+__queuestorage__/
+
+# Development
+*.log
+.DS_Store
+.env
+test/
+coverage/
+
+# Build outputs
+dist/
+*.zip
