@@ -2,7 +2,7 @@
   "name": "insightflow-functions",
   "version": "1.0.2",
   "description": "InsightFlow Azure Functions for AI-powered Salesforce call insights",
-  "main": "src/functions/*.js",
+  "main": "src/functions.js",
   "scripts": {
     "start": "func start",
     "test": "echo \"No tests yet...\""
