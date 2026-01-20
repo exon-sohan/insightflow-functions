@@ -1,10 +1,10 @@
 const { app } = require("@azure/functions");
-const { AIProjectClient } = require("@azure/ai-projects");
+const { AzureOpenAI } = require("@azure/openai");
 const { DefaultAzureCredential } = require("@azure/identity");
 const { BlobServiceClient } = require("@azure/storage-blob");
 
-const PROJECT_ENDPOINT = process.env.AZURE_AI_PROJECT_ENDPOINT;
-const AGENT_ID = process.env.AZURE_AI_AGENT_ID;
+const AZURE_OPENAI_ENDPOINT = process.env.AZURE_AI_PROJECT_ENDPOINT;
+const AZURE_OPENAI_DEPLOYMENT = process.env.AZURE_OPENAI_DEPLOYMENT_NAME;
 const STORAGE_ACCOUNT_NAME = process.env.AZURE_STORAGE_ACCOUNT_NAME;
 const INPUT_CONTAINER = "datasets";
 const OUTPUT_CONTAINER = "output";
@@ -48,19 +48,20 @@ app.storageBlob("storageBlobTrigger", {
       const records = parseCallRecords(content);
       log.info(`Parsed ${records.length} record(s)`);
 
-      /* AGENT INIT */
-      log.info("Initializing Azure AI Projects client");
-      log.info(`Project endpoint: ${PROJECT_ENDPOINT || "NOT SET"}`);
+      /* AZURE OPENAI INIT */
+      log.info("Initializing Azure OpenAI client");
+      log.info(`Endpoint: ${AZURE_OPENAI_ENDPOINT || "NOT SET"}`);
+      log.info(`Deployment: ${AZURE_OPENAI_DEPLOYMENT || "NOT SET"}`);
 
-      if (!PROJECT_ENDPOINT) {
+      if (!AZURE_OPENAI_ENDPOINT) {
         throw new Error(
           "AZURE_AI_PROJECT_ENDPOINT environment variable is not set"
         );
       }
 
-      if (!AGENT_ID) {
+      if (!AZURE_OPENAI_DEPLOYMENT) {
         throw new Error(
-          "AZURE_AI_AGENT_ID environment variable is not set"
+          "AZURE_OPENAI_DEPLOYMENT_NAME environment variable is not set"
         );
       }
 
@@ -68,25 +69,28 @@ app.storageBlob("storageBlobTrigger", {
       const credential = new DefaultAzureCredential();
       log.info("DefaultAzureCredential created");
 
-      let projectClient;
+      let openAIClient;
       try {
-        log.info("Creating AIProjectClient...");
-        projectClient = new AIProjectClient(PROJECT_ENDPOINT, credential);
-        log.info("AIProjectClient created successfully");
+        log.info("Creating AzureOpenAI client...");
+        openAIClient = new AzureOpenAI({
+          endpoint: AZURE_OPENAI_ENDPOINT,
+          credential: credential,
+          apiVersion: "2024-10-21",
+        });
+        log.info("AzureOpenAI client created successfully");
       } catch (initErr) {
-        log.error("Failed to create AI Projects client", initErr);
+        log.error("Failed to create Azure OpenAI client", initErr);
         throw initErr;
       }
 
-      log.info(`Using agent ID: ${AGENT_ID}`);
-      log.success(`Connected to agent`, { agentId: AGENT_ID });
+      log.success(`Connected to Azure OpenAI deployment: ${AZURE_OPENAI_DEPLOYMENT}`);
 
       /* PROCESS RECORDS IN BATCHES */
       const processedResults = await processBatches(
         records,
         BATCH_SIZE,
-        projectClient,
-        AGENT_ID,
+        openAIClient,
+        AZURE_OPENAI_DEPLOYMENT,
         log
       );
 
@@ -115,7 +119,7 @@ function chunkArray(array, size) {
   return chunks;
 }
 
-async function processBatches(records, batchSize, projectClient, agentId, log) {
+async function processBatches(records, batchSize, openAIClient, deploymentName, log) {
   const batches = chunkArray(records, batchSize);
   const allResults = [];
 
@@ -136,23 +140,23 @@ async function processBatches(records, batchSize, projectClient, agentId, log) {
     // Process all records in this batch concurrently
     const batchPromises = batch.map((record, indexInBatch) => {
       const globalIndex = batchStart + indexInBatch;
-      const recordId = record.Name || record.$ || `Record-${globalIndex + 1}`;
+      const recordId = record.Name || record.Id || `Record-${globalIndex + 1}`;
 
       log.info(`Queuing record ${globalIndex + 1}/${records.length}`, {
         recordId,
       });
 
-      return processWithAgent(projectClient, agentId, record, log)
+      return processWithOpenAI(openAIClient, deploymentName, record, log)
         .then((result) => ({
           success: true,
           originalRecord: record,
-          agentResponse: result,
+          aiResponse: result,
           processedAt: new Date().toISOString(),
         }))
         .catch((error) => ({
           success: false,
           originalRecord: record,
-          agentResponse: { error: error.message || String(error) },
+          aiResponse: { error: error.message || String(error) },
           processedAt: new Date().toISOString(),
         }));
     });
@@ -184,68 +188,36 @@ async function processBatches(records, batchSize, projectClient, agentId, log) {
 }
 
 /* ───────────────────────────────────────────────────────────── */
-/* HELPERS */
+/* AZURE OPENAI PROCESSING */
 /* ───────────────────────────────────────────────────────────── */
-function parseCallRecords(content) {
-  return content
-    .split("\n")
-    .map((l) => l.trim())
-    .filter(Boolean)
-    .map((line) => {
-      try {
-        return JSON.parse(line);
-      } catch {
-        return null;
-      }
-    })
-    .filter(Boolean);
-}
-
-async function processWithAgent(projectClient, agentId, record, log) {
-  const recordId = record.Name || record.$ || "UNKNOWN";
-  let thread;
+async function processWithOpenAI(openAIClient, deploymentName, record, log) {
+  const recordId = record.Name || record.Id || "UNKNOWN";
 
   /* ─────────────────────────────────────────────
-   * CREATE THREAD
+   * BUILD PROMPT
    * ───────────────────────────────────────────── */
-  try {
-    log.info("Creating agent thread", { recordId });
-    thread = await projectClient.agents.threads.create();
-    log.info("Thread created", { recordId, threadId: thread.id });
-  } catch (err) {
-    log.error("Failed to create thread", err);
-    throw err;
-  }
-
-  /* ─────────────────────────────────────────────
-   * PROMPT
-   * ───────────────────────────────────────────── */
-  const messageContent = `
-Analyze the following call record and generate structured insights for leadership reporting.
+  const systemPrompt = `You are an AI assistant specialized in analyzing customer call records for leadership reporting.
 
 RULES:
-- Output ONLY valid JSON
-- No markdown, no explanations
-- Do NOT hallucinate
+- Output ONLY valid JSON (no markdown, no explanations)
+- Do NOT hallucinate or infer information not present in the data
 - Use null, false, or [] if data is missing or unclear
+- Be precise and factual`;
+
+  const userPrompt = `Analyze the following call record and generate structured insights for leadership reporting.
 
 === CALL RECORD ===
-Record ID: ${record.$ || "N/A"}
+Record ID: ${record.Id || "N/A"}
 Name: ${record.Name || "N/A"}
-Call Type: ${record.CallType__c || "N/A"}
-Status: ${record.Status__c || "N/A"}
-Priority: ${record.Priority__c || "N/A"}
-Subject: ${record.Subject__c || "N/A"}
-Description: ${record.Description__c || "N/A"}
-Phone: ${record.Phone__c || "N/A"}
-Email: ${record.Email__c || "N/A"}
-Created Date: ${record.CreatedDate || "N/A"}
-
 Call Details:
 ${record.calldetails__c || "N/A"}
 
 Call Highlights:
 ${stripHtml(record.callhighlights__c || "")}
+
+Description: ${record.Description__c || "N/A"}
+Status: ${record.Status__c || "N/A"}
+Created Date: ${record.CreatedDate || "N/A"}
 
 === REQUIRED OUTPUT ===
 {
@@ -391,75 +363,52 @@ ${stripHtml(record.callhighlights__c || "")}
     "missingInformation": [],
     "assumptionsMade": []
   }
-}
-`;
+}`;
 
   /* ─────────────────────────────────────────────
-   * SEND MESSAGE
-   * ───────────────────────────────────────────── */
-  await projectClient.agents.messages.create(thread.id, "user", messageContent);
-
-  /* ─────────────────────────────────────────────
-   * RUN AGENT
-   * ───────────────────────────────────────────── */
-  let run = await projectClient.agents.runs.create(thread.id, agentId);
-
-  let attempts = 0;
-  while (["queued", "in_progress"].includes(run.status)) {
-    await sleep(1000);
-    run = await projectClient.agents.runs.get(thread.id, run.id);
-    if (++attempts % 5 === 0) {
-      log.info("Agent running", { recordId, status: run.status });
-    }
-  }
-
-  if (run.status !== "completed") {
-    log.warn("Run failed", { recordId, status: run.status });
-    return { error: run.status };
-  }
-
-  /* ─────────────────────────────────────────────
-   * FETCH RESPONSE
-   * ───────────────────────────────────────────── */
-  let response = "";
-  const messages = projectClient.agents.messages.list(thread.id);
-
-  for await (const msg of messages) {
-    if (msg.role === "assistant") {
-      const text = msg.content.find((c) => c.type === "text");
-      if (text) response = text.text.value;
-      break;
-    }
-  }
-
-  /* ─────────────────────────────────────────────
-   * CLEAN + PARSE
-   * ───────────────────────────────────────────── */
-  let insights;
-  try {
-    let clean = response
-      .trim()
-      .replace(/^```json/, "")
-      .replace(/^```/, "")
-      .replace(/```$/, "")
-      .trim();
-
-    insights = JSON.parse(clean);
-  } catch {
-    log.warn("JSON parse failed", { recordId });
-    insights = { rawResponse: response, parseError: true };
-  }
-
-  /* ─────────────────────────────────────────────
-   * CLEANUP
+   * CALL AZURE OPENAI
    * ───────────────────────────────────────────── */
   try {
-    await projectClient.agents.threads.delete(thread.id);
-  } catch {}
+    log.info(`Processing record with Azure OpenAI`, { recordId });
 
-  return { insights, runId: run.id };
+    const response = await openAIClient.chat.completions.create({
+      model: deploymentName,
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userPrompt },
+      ],
+      temperature: 0.3,
+      max_tokens: 4000,
+      response_format: { type: "json_object" },
+    });
+
+    const content = response.choices[0]?.message?.content;
+    if (!content) {
+      throw new Error("No response content from Azure OpenAI");
+    }
+
+    /* ─────────────────────────────────────────────
+     * PARSE JSON RESPONSE
+     * ───────────────────────────────────────────── */
+    let insights;
+    try {
+      insights = JSON.parse(content);
+    } catch (parseErr) {
+      log.warn("JSON parse failed", { recordId });
+      insights = { rawResponse: content, parseError: true };
+    }
+
+    log.success(`Processed record ${recordId}`);
+    return { insights, usage: response.usage };
+  } catch (err) {
+    log.error(`Failed to process record ${recordId}`, err);
+    throw err;
+  }
 }
 
+/* ───────────────────────────────────────────────────────────── */
+/* SAVE RESULTS TO BLOB STORAGE */
+/* ───────────────────────────────────────────────────────────── */
 async function saveProcessedResults(originalFileName, results, log) {
   log.info("Saving processed results to Blob Storage");
 
@@ -490,13 +439,27 @@ async function saveProcessedResults(originalFileName, results, log) {
   log.success("Results saved", { outputName });
 }
 
+/* ───────────────────────────────────────────────────────────── */
+/* HELPERS */
+/* ───────────────────────────────────────────────────────────── */
+function parseCallRecords(content) {
+  return content
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean)
+    .map((line) => {
+      try {
+        return JSON.parse(line);
+      } catch {
+        return null;
+      }
+    })
+    .filter(Boolean);
+}
+
 function stripHtml(html) {
   return html
     .replace(/<[^>]*>/g, " ")
     .replace(/\s+/g, " ")
     .trim();
-}
-
-function sleep(ms) {
-  return new Promise((r) => setTimeout(r, ms));
 }
