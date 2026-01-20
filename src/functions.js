@@ -5,3 +5,4 @@ require("./functions/triggerPipeline");
 require("./functions/storageBlobTrigger");
 require("./functions/salesforceSyncTrigger");
 require("./functions/generateInsightsSummary");
+require("./functions/processBlobHttp");
