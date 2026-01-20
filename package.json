@@ -1,6 +1,6 @@
 {
   "name": "insightflow-functions",
-  "version": "1.0.3",
+  "version": "1.0.2",
   "description": "InsightFlow Azure Functions for AI-powered Salesforce call insights",
   "main": "src/functions.js",
   "scripts": {
@@ -10,8 +10,8 @@
   "dependencies": {
     "@azure/functions": "^4.10.0",
     "@azure/identity": "^4.13.0",
-    "@azure/openai": "^2.0.0",
-    "@azure/storage-blob": "^12.29.1"
+    "@azure/storage-blob": "^12.29.1",
+    "openai": "^4.77.3"
   },
   "devDependencies": {
     "azure-functions-core-tools": "^4.x"

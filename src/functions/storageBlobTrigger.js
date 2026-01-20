@@ -1,6 +1,6 @@
 const { app } = require("@azure/functions");
-const { AzureOpenAI } = require("@azure/openai");
-const { DefaultAzureCredential } = require("@azure/identity");
+const { AzureOpenAI } = require("openai");
+const { DefaultAzureCredential, getBearerTokenProvider } = require("@azure/identity");
 const { BlobServiceClient } = require("@azure/storage-blob");
 
 const AZURE_OPENAI_ENDPOINT = process.env.AZURE_AI_PROJECT_ENDPOINT;
@@ -69,12 +69,18 @@ app.storageBlob("storageBlobTrigger", {
       const credential = new DefaultAzureCredential();
       log.info("DefaultAzureCredential created");
 
+      log.info("Creating Azure AD token provider...");
+      const scope = "https://cognitiveservices.azure.com/.default";
+      const azureADTokenProvider = getBearerTokenProvider(credential, scope);
+      log.info("Token provider created");
+
       let openAIClient;
       try {
         log.info("Creating AzureOpenAI client...");
         openAIClient = new AzureOpenAI({
           endpoint: AZURE_OPENAI_ENDPOINT,
-          credential: credential,
+          azureADTokenProvider,
+          deployment: AZURE_OPENAI_DEPLOYMENT,
           apiVersion: "2024-10-21",
         });
         log.info("AzureOpenAI client created successfully");
