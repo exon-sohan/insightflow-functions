@@ -1,8 +1,7 @@
 const { app } = require("@azure/functions");
 const { BlobServiceClient } = require("@azure/storage-blob");
-const { DefaultAzureCredential } = require("@azure/identity");
 
-const STORAGE_ACCOUNT_NAME = process.env.AZURE_STORAGE_ACCOUNT_NAME;
+const STORAGE_CONNECTION_STRING = process.env.AZURE_STORAGE_CONNECTION_STRING;
 const OUTPUT_CONTAINER = "output";
 const SUMMARY_CONTAINER = "summaries";
 
@@ -22,20 +21,16 @@ app.http("generateInsightsSummary", {
       const cutoffDate = new Date();
       cutoffDate.setDate(cutoffDate.getDate() - daysBack);
 
-      // Validate storage account name
-      if (!STORAGE_ACCOUNT_NAME) {
+      // Validate storage connection string
+      if (!STORAGE_CONNECTION_STRING) {
         return {
           status: 500,
-          jsonBody: { error: "AZURE_STORAGE_ACCOUNT_NAME environment variable is not set" },
+          jsonBody: { error: "AZURE_STORAGE_CONNECTION_STRING environment variable is not set" },
         };
       }
 
-      // Connect to blob storage using Managed Identity
-      const credential = new DefaultAzureCredential();
-      const blobServiceClient = new BlobServiceClient(
-        `https://${STORAGE_ACCOUNT_NAME}.blob.core.windows.net`,
-        credential
-      );
+      // Connect to blob storage using connection string
+      const blobServiceClient = BlobServiceClient.fromConnectionString(STORAGE_CONNECTION_STRING);
       const containerClient = blobServiceClient.getContainerClient(OUTPUT_CONTAINER);
 
       // Find the latest processed file only

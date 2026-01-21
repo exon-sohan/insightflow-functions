@@ -1,11 +1,11 @@
 const { app } = require("@azure/functions");
 const { AzureOpenAI } = require("openai");
-const { DefaultAzureCredential, getBearerTokenProvider } = require("@azure/identity");
 const { BlobServiceClient } = require("@azure/storage-blob");
 
 const AZURE_OPENAI_ENDPOINT = process.env.AZURE_AI_PROJECT_ENDPOINT;
 const AZURE_OPENAI_DEPLOYMENT = process.env.AZURE_OPENAI_DEPLOYMENT_NAME;
-const STORAGE_ACCOUNT_NAME = process.env.AZURE_STORAGE_ACCOUNT_NAME;
+const AZURE_OPENAI_API_KEY = process.env.AZURE_OPENAI_API_KEY;
+const STORAGE_CONNECTION_STRING = process.env.AZURE_STORAGE_CONNECTION_STRING;
 const INPUT_CONTAINER = "datasets";
 const OUTPUT_CONTAINER = "output";
 const BATCH_SIZE = parseInt(process.env.BATCH_SIZE || "10", 10);
@@ -65,21 +65,18 @@ app.storageBlob("storageBlobTrigger", {
         );
       }
 
-      log.info("Creating DefaultAzureCredential...");
-      const credential = new DefaultAzureCredential();
-      log.info("DefaultAzureCredential created");
-
-      log.info("Creating Azure AD token provider...");
-      const scope = "https://cognitiveservices.azure.com/.default";
-      const azureADTokenProvider = getBearerTokenProvider(credential, scope);
-      log.info("Token provider created");
+      if (!AZURE_OPENAI_API_KEY) {
+        throw new Error(
+          "AZURE_OPENAI_API_KEY environment variable is not set"
+        );
+      }
 
       let openAIClient;
       try {
-        log.info("Creating AzureOpenAI client...");
+        log.info("Creating AzureOpenAI client with API key...");
         openAIClient = new AzureOpenAI({
           endpoint: AZURE_OPENAI_ENDPOINT,
-          azureADTokenProvider,
+          apiKey: AZURE_OPENAI_API_KEY,
           deployment: AZURE_OPENAI_DEPLOYMENT,
           apiVersion: "2024-10-21",
         });
@@ -418,17 +415,12 @@ Created Date: ${record.CreatedDate || "N/A"}
 async function saveProcessedResults(originalFileName, results, log) {
   log.info("Saving processed results to Blob Storage");
 
-  if (!STORAGE_ACCOUNT_NAME) {
-    throw new Error("AZURE_STORAGE_ACCOUNT_NAME environment variable is not set");
+  if (!STORAGE_CONNECTION_STRING) {
+    throw new Error("AZURE_STORAGE_CONNECTION_STRING environment variable is not set");
   }
 
-  const credential = new DefaultAzureCredential();
-  const blobServiceClient = new BlobServiceClient(
-    `https://${STORAGE_ACCOUNT_NAME}.blob.core.windows.net`,
-    credential
-  );
-  const containerClient =
-    blobServiceClient.getContainerClient(OUTPUT_CONTAINER);
+  const blobServiceClient = BlobServiceClient.fromConnectionString(STORAGE_CONNECTION_STRING);
+  const containerClient = blobServiceClient.getContainerClient(OUTPUT_CONTAINER);
   await containerClient.createIfNotExists();
 
   const base = originalFileName.replace(/\.[^/.]+$/, "");

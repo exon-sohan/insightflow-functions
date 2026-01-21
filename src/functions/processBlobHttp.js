@@ -1,11 +1,11 @@
 const { app } = require("@azure/functions");
 const { AzureOpenAI } = require("openai");
-const { DefaultAzureCredential, getBearerTokenProvider } = require("@azure/identity");
 const { BlobServiceClient } = require("@azure/storage-blob");
 
 const AZURE_OPENAI_ENDPOINT = process.env.AZURE_AI_PROJECT_ENDPOINT;
 const AZURE_OPENAI_DEPLOYMENT = process.env.AZURE_OPENAI_DEPLOYMENT_NAME;
-const STORAGE_ACCOUNT_NAME = process.env.AZURE_STORAGE_ACCOUNT_NAME;
+const AZURE_OPENAI_API_KEY = process.env.AZURE_OPENAI_API_KEY;
+const STORAGE_CONNECTION_STRING = process.env.AZURE_STORAGE_CONNECTION_STRING;
 const INPUT_CONTAINER = "datasets";
 const OUTPUT_CONTAINER = "output";
 
@@ -28,11 +28,7 @@ app.http("processBlobHttp", {
     const blobName = request.query.get("blobName") || "latest";
 
     try {
-      const credential = new DefaultAzureCredential();
-      const blobServiceClient = new BlobServiceClient(
-        `https://${STORAGE_ACCOUNT_NAME}.blob.core.windows.net`,
-        credential
-      );
+      const blobServiceClient = BlobServiceClient.fromConnectionString(STORAGE_CONNECTION_STRING);
       const containerClient = blobServiceClient.getContainerClient(INPUT_CONTAINER);
 
       let blobClient;
@@ -70,13 +66,11 @@ app.http("processBlobHttp", {
 
       log.info(`Found ${records.length} records`);
 
-      log.info("Initializing Azure OpenAI");
-      const scope = "https://cognitiveservices.azure.com/.default";
-      const azureADTokenProvider = getBearerTokenProvider(credential, scope);
+      log.info("Initializing Azure OpenAI with API key");
 
       const openAIClient = new AzureOpenAI({
         endpoint: AZURE_OPENAI_ENDPOINT,
-        azureADTokenProvider,
+        apiKey: AZURE_OPENAI_API_KEY,
         deployment: AZURE_OPENAI_DEPLOYMENT,
         apiVersion: "2024-10-21",
       });

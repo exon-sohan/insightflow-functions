@@ -1,7 +1,7 @@
 const { app } = require("@azure/functions");
 const { BlobServiceClient } = require("@azure/storage-blob");
 
-const STORAGE_ACCOUNT_NAME = process.env.AZURE_STORAGE_ACCOUNT_NAME;
+const STORAGE_CONNECTION_STRING = process.env.AZURE_STORAGE_CONNECTION_STRING;
 
 // Salesforce Connected App credentials (OAuth 2.0 Client Credentials Flow - same as Data Factory)
 // All values must be provided via environment variables - no hardcoded defaults
@@ -378,18 +378,12 @@ async function uploadToSalesforce(auth, records, batchSize, log) {
 /* ───────────────────────────────────────────────────────────── */
 async function saveSyncStatus(originalFileName, status, log) {
   try {
-    const { DefaultAzureCredential } = require("@azure/identity");
-
-    if (!STORAGE_ACCOUNT_NAME) {
-      log.warn("AZURE_STORAGE_ACCOUNT_NAME not set, skipping sync status save");
+    if (!STORAGE_CONNECTION_STRING) {
+      log.warn("AZURE_STORAGE_CONNECTION_STRING not set, skipping sync status save");
       return;
     }
 
-    const credential = new DefaultAzureCredential();
-    const blobServiceClient = new BlobServiceClient(
-      `https://${STORAGE_ACCOUNT_NAME}.blob.core.windows.net`,
-      credential
-    );
+    const blobServiceClient = BlobServiceClient.fromConnectionString(STORAGE_CONNECTION_STRING);
     const containerClient = blobServiceClient.getContainerClient("sf-sync-status");
     await containerClient.createIfNotExists();
 
