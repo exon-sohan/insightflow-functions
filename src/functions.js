@@ -3,5 +3,6 @@
 
 require("./functions/triggerPipeline");
 require("./functions/storageBlobTrigger");
+require("./functions/batchApiStatusChecker");
 require("./functions/salesforceSyncTrigger");
 require("./functions/generateInsightsSummary");
