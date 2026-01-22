@@ -441,18 +441,32 @@ async function saveProcessedResults(originalFileName, results, log) {
 /* HELPERS */
 /* ───────────────────────────────────────────────────────────── */
 function parseCallRecords(content) {
-  return content
-    .split("\n")
-    .map((l) => l.trim())
-    .filter(Boolean)
-    .map((line) => {
-      try {
-        return JSON.parse(line);
-      } catch {
-        return null;
-      }
-    })
-    .filter(Boolean);
+  // Remove BOM if present
+  const cleanContent = content.replace(/^\uFEFF/, '').trim();
+
+  // Try parsing as JSON array first
+  try {
+    const parsed = JSON.parse(cleanContent);
+    if (Array.isArray(parsed)) {
+      return parsed;
+    }
+    // Single object
+    return [parsed];
+  } catch {
+    // Fall back to NDJSON (newline-delimited JSON)
+    return cleanContent
+      .split("\n")
+      .map((l) => l.trim())
+      .filter(Boolean)
+      .map((line) => {
+        try {
+          return JSON.parse(line);
+        } catch {
+          return null;
+        }
+      })
+      .filter(Boolean);
+  }
 }
 
 function stripHtml(html) {
