@@ -5,9 +5,9 @@ const { BlobServiceClient } = require("@azure/storage-blob");
 const AZURE_OPENAI_ENDPOINT = process.env.AZURE_AI_PROJECT_ENDPOINT;
 const AZURE_OPENAI_DEPLOYMENT = process.env.AZURE_OPENAI_DEPLOYMENT_NAME;
 const AZURE_OPENAI_API_KEY = process.env.AZURE_OPENAI_API_KEY;
-const STORAGE_CONNECTION_STRING = process.env.AZURE_STORAGE_CONNECTION_STRING;
-const INPUT_CONTAINER = "datasets";
-const OUTPUT_CONTAINER = "output";
+// Use AZURE_STORAGE_CONNECTION_STRING or fallback to AzureWebJobsStorage
+const STORAGE_CONNECTION_STRING = process.env.AZURE_STORAGE_CONNECTION_STRING || process.env.AzureWebJobsStorage;
+const OUTPUT_CONTAINER = process.env.OUTPUT_CONTAINER || "output";
 const BATCH_SIZE = parseInt(process.env.BATCH_SIZE || "10", 10);
 
 /* ───────────────────────────────────────────────────────────── */
@@ -416,7 +416,7 @@ async function saveProcessedResults(originalFileName, results, log) {
   log.info("Saving processed results to Blob Storage");
 
   if (!STORAGE_CONNECTION_STRING) {
-    throw new Error("AZURE_STORAGE_CONNECTION_STRING environment variable is not set");
+    throw new Error("AZURE_STORAGE_CONNECTION_STRING or AzureWebJobsStorage environment variable is not set");
   }
 
   const blobServiceClient = BlobServiceClient.fromConnectionString(STORAGE_CONNECTION_STRING);
