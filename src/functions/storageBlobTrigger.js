@@ -17,6 +17,7 @@ const STORAGE_CONNECTION_STRING =
   process.env.AZURE_STORAGE_CONNECTION_STRING ||
   process.env.AzureWebJobsStorage;
 const OUTPUT_CONTAINER = process.env.OUTPUT_CONTAINER || "output";
+const PROMPT_CONFIG_CONTAINER = "prompt-configs";
 
 /* ───────────────────────────────────────────────────────────── */
 /* LOGGER */
@@ -61,6 +62,21 @@ app.storageBlob("storageBlobTrigger", {
         return;
       }
 
+      // Try to load custom prompt config based on the file path
+      // File path is like "ObjectName/ObjectName_timestamp.json"
+      let promptConfig = null;
+      try {
+        const objectNameFromPath = fileName.split("/")[0] || fileName.split("_")[0];
+        if (objectNameFromPath) {
+          promptConfig = await loadPromptConfig(objectNameFromPath.toLowerCase(), log);
+          if (promptConfig) {
+            log.info(`Loaded custom prompt config for object: ${objectNameFromPath}`);
+          }
+        }
+      } catch (configError) {
+        log.debug("No custom prompt config found, using defaults");
+      }
+
       // Validate Azure OpenAI config
       if (!AZURE_OPENAI_ENDPOINT) {
         throw new Error("AZURE_AI_PROJECT_ENDPOINT environment variable is not set");
@@ -86,7 +102,7 @@ app.storageBlob("storageBlobTrigger", {
 
       // Create JSONL content for batch API
       log.info("Creating JSONL batch input file");
-      const jsonlContent = createBatchJsonl(records, AZURE_OPENAI_BATCH_DEPLOYMENT);
+      const jsonlContent = createBatchJsonl(records, AZURE_OPENAI_BATCH_DEPLOYMENT, promptConfig);
 
       // Upload JSONL file to Azure OpenAI
       log.info("Uploading batch input file to Azure OpenAI");
@@ -126,9 +142,15 @@ app.storageBlob("storageBlobTrigger", {
 /* ───────────────────────────────────────────────────────────── */
 /* CREATE JSONL FOR BATCH API */
 /* ───────────────────────────────────────────────────────────── */
-function createBatchJsonl(records, deploymentName) {
+function createBatchJsonl(records, deploymentName, promptConfig = null) {
   const lines = records.map((record, index) => {
     const recordId = record.Id || record.Name || `record-${index}`;
+
+    // Use custom prompts if provided, otherwise use defaults
+    const systemPromptContent = promptConfig?.systemPrompt || getSystemPrompt();
+    const userPromptContent = promptConfig?.userPromptTemplate
+      ? buildCustomUserPrompt(record, promptConfig.userPromptTemplate, promptConfig.fieldNames)
+      : getUserPrompt(record);
 
     const request = {
       custom_id: recordId,
@@ -137,8 +159,8 @@ function createBatchJsonl(records, deploymentName) {
       body: {
         model: deploymentName,
         messages: [
-          { role: "system", content: getSystemPrompt() },
-          { role: "user", content: getUserPrompt(record) },
+          { role: "system", content: systemPromptContent },
+          { role: "user", content: userPromptContent },
         ],
         temperature: 0.3,
         max_tokens: 4000,
@@ -150,6 +172,78 @@ function createBatchJsonl(records, deploymentName) {
   });
 
   return lines.join("\n");
+}
+
+/* ───────────────────────────────────────────────────────────── */
+/* BUILD CUSTOM USER PROMPT WITH DYNAMIC FIELDS */
+/* ───────────────────────────────────────────────────────────── */
+function buildCustomUserPrompt(record, userPromptTemplate, fieldNames) {
+  // Replace {{fieldName}} placeholders with actual values from the record
+  let prompt = userPromptTemplate;
+
+  // Replace all {{fieldName}} placeholders
+  const fieldList = fieldNames ? fieldNames.split(",").map(f => f.trim()) : [];
+
+  // Build a record data section with all available fields
+  let recordDataSection = "=== RECORD DATA ===\n";
+  for (const field of fieldList) {
+    const value = record[field] !== undefined ? record[field] : "N/A";
+    recordDataSection += `${field}: ${value}\n`;
+    // Also replace specific placeholders like {{Id}}, {{Name}}, etc.
+    prompt = prompt.replace(new RegExp(`\\{\\{${field}\\}\\}`, 'g'), value || "N/A");
+  }
+
+  // Also add all record fields for flexibility
+  for (const [key, value] of Object.entries(record)) {
+    prompt = prompt.replace(new RegExp(`\\{\\{${key}\\}\\}`, 'g'), value || "N/A");
+  }
+
+  // Replace {{RECORD_DATA}} placeholder with the full record data section
+  prompt = prompt.replace(/\{\{RECORD_DATA\}\}/g, recordDataSection);
+
+  // Replace {{RECORD_JSON}} with the full JSON record
+  prompt = prompt.replace(/\{\{RECORD_JSON\}\}/g, JSON.stringify(record, null, 2));
+
+  return prompt;
+}
+
+/* ───────────────────────────────────────────────────────────── */
+/* LOAD PROMPT CONFIG FROM BLOB STORAGE */
+/* ───────────────────────────────────────────────────────────── */
+async function loadPromptConfig(objectName, log) {
+  try {
+    const blobServiceClient = BlobServiceClient.fromConnectionString(STORAGE_CONNECTION_STRING);
+    const containerClient = blobServiceClient.getContainerClient(PROMPT_CONFIG_CONTAINER);
+
+    const configBlobName = `${objectName}_config.json`;
+    const blockBlobClient = containerClient.getBlockBlobClient(configBlobName);
+
+    // Check if blob exists
+    const exists = await blockBlobClient.exists();
+    if (!exists) {
+      return null;
+    }
+
+    // Download and parse config
+    const downloadResponse = await blockBlobClient.download(0);
+    const configContent = await streamToString(downloadResponse.readableStreamBody);
+    const config = JSON.parse(configContent);
+
+    log.info(`Loaded prompt config: systemPrompt=${!!config.systemPrompt}, userPromptTemplate=${!!config.userPromptTemplate}`);
+    return config;
+  } catch (error) {
+    log.debug(`Failed to load prompt config for ${objectName}: ${error.message}`);
+    return null;
+  }
+}
+
+async function streamToString(readableStream) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    readableStream.on("data", (data) => chunks.push(data.toString()));
+    readableStream.on("end", () => resolve(chunks.join("")));
+    readableStream.on("error", reject);
+  });
 }
 
 /* ───────────────────────────────────────────────────────────── */
