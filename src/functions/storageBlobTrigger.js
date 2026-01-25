@@ -147,10 +147,16 @@ function createBatchJsonl(records, deploymentName, promptConfig = null) {
     const recordId = record.Id || record.Name || `record-${index}`;
 
     // Use custom prompts if provided, otherwise use defaults
-    const systemPromptContent = promptConfig?.systemPrompt || getSystemPrompt();
+    let systemPromptContent = promptConfig?.systemPrompt || getSystemPrompt();
     const userPromptContent = promptConfig?.userPromptTemplate
       ? buildCustomUserPrompt(record, promptConfig.userPromptTemplate, promptConfig.fieldNames)
       : getUserPrompt(record);
+
+    // Ensure "JSON" appears in the prompts (required for response_format: json_object)
+    const hasJsonMention = (systemPromptContent + userPromptContent).toLowerCase().includes('json');
+    if (!hasJsonMention) {
+      systemPromptContent += "\n\nIMPORTANT: You must respond with a valid JSON object.";
+    }
 
     const request = {
       custom_id: recordId,
