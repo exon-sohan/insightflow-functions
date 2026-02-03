@@ -1,7 +1,7 @@
 {
   "name": "insightflow-functions",
-  "version": "1.0.2",
-  "description": "InsightFlow Azure Functions for AI-powered Salesforce call insights",
+  "version": "1.0.3",
+  "description": "InsightFlow Azure Functions - AI-powered Salesforce analytics with custom schema support",
   "main": "src/functions.js",
   "scripts": {
     "start": "func start",
@@ -28,7 +28,8 @@
     "salesforce",
     "ai",
     "azure-openai",
-    "call-insights"
+    "call-insights",
+    "custom-schema"
   ],
   "author": "InsightFlow",
   "license": "MIT"

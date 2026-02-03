@@ -1,0 +1,257 @@
+{
+  "description": "API Examples for InsightFlow Functions",
+  "baseUrl": "https://<function-app-name>.azurewebsites.net",
+  "authentication": {
+    "type": "function-key",
+    "header": "x-functions-key",
+    "queryParam": "code",
+    "note": "Get function key from Azure Portal > Function App > App Keys"
+  },
+  "endpoints": {
+    "triggerPipeline": {
+      "description": "Trigger the Salesforce data extraction pipeline",
+      "method": "POST",
+      "url": "/api/triggerpipeline",
+      "examples": [
+        {
+          "name": "Basic - Default Pipeline (no body required)",
+          "description": "Triggers the default SalesforceCallReportPipeline with default settings",
+          "curl": "curl -X POST \"https://<function-app-name>.azurewebsites.net/api/triggerpipeline?code=<function-key>\" -H \"Content-Type: application/json\"",
+          "request": {},
+          "response": {
+            "success": true,
+            "message": "Pipeline triggered successfully",
+            "runId": "87185314-aba9-45f8-a441-00451799102d",
+            "pipelineName": "SalesforceCallReportPipeline",
+            "dataFactoryName": "insightflow-adf-xxxxx",
+            "timestamp": "2026-01-27T11:58:47.551Z"
+          }
+        },
+        {
+          "name": "Dynamic Pipeline - Extract Accounts",
+          "description": "Extract specific fields from Account object",
+          "curl": "curl -X POST \"https://<function-app-name>.azurewebsites.net/api/triggerpipeline?code=<function-key>\" -H \"Content-Type: application/json\" -d '{\"objectApiName\": \"Account\", \"fieldNames\": \"Id,Name,Industry,Description,Website\"}'",
+          "request": {
+            "objectApiName": "Account",
+            "fieldNames": "Id,Name,Industry,Description,Website"
+          },
+          "response": {
+            "success": true,
+            "message": "Pipeline triggered successfully",
+            "runId": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+            "pipelineName": "DynamicSalesforceExtractPipeline",
+            "dataFactoryName": "insightflow-dynamic-adf-poc",
+            "timestamp": "2026-01-27T12:00:00.000Z",
+            "parameters": {
+              "objectApiName": "Account",
+              "fieldNames": "Id,Name,Industry,Description,Website",
+              "whereClause": ""
+            }
+          }
+        },
+        {
+          "name": "Dynamic Pipeline - Extract with WHERE clause",
+          "description": "Extract Opportunities created in last 30 days",
+          "curl": "curl -X POST \"https://<function-app-name>.azurewebsites.net/api/triggerpipeline?code=<function-key>\" -H \"Content-Type: application/json\" -d '{\"objectApiName\": \"Opportunity\", \"fieldNames\": \"Id,Name,Amount,StageName,CloseDate\", \"whereClause\": \"CreatedDate >= LAST_N_DAYS:30\"}'",
+          "request": {
+            "objectApiName": "Opportunity",
+            "fieldNames": "Id,Name,Amount,StageName,CloseDate",
+            "whereClause": "CreatedDate >= LAST_N_DAYS:30"
+          },
+          "response": {
+            "success": true,
+            "message": "Pipeline triggered successfully",
+            "runId": "b2c3d4e5-f6a7-8901-bcde-f23456789012",
+            "pipelineName": "DynamicSalesforceExtractPipeline",
+            "dataFactoryName": "insightflow-dynamic-adf-poc",
+            "timestamp": "2026-01-27T12:05:00.000Z",
+            "parameters": {
+              "objectApiName": "Opportunity",
+              "fieldNames": "Id,Name,Amount,StageName,CloseDate",
+              "whereClause": "CreatedDate >= LAST_N_DAYS:30"
+            }
+          }
+        },
+        {
+          "name": "Dynamic Pipeline - Custom Prompts",
+          "description": "Extract Cases with custom AI analysis prompts",
+          "curl": "curl -X POST \"https://<function-app-name>.azurewebsites.net/api/triggerpipeline?code=<function-key>\" -H \"Content-Type: application/json\" -d '{\"objectApiName\": \"Case\", \"fieldNames\": \"Id,Subject,Description,Status,Priority\", \"whereClause\": \"Status != '\\''Closed'\\''\", \"systemPrompt\": \"You are a customer support analyst. Analyze support cases and provide insights.\", \"userPromptTemplate\": \"Analyze this support case and identify: 1) Root cause 2) Urgency level 3) Recommended resolution. Case: {{record}}\"}'",
+          "request": {
+            "objectApiName": "Case",
+            "fieldNames": "Id,Subject,Description,Status,Priority",
+            "whereClause": "Status != 'Closed'",
+            "systemPrompt": "You are a customer support analyst. Analyze support cases and provide insights. Respond with valid JSON.",
+            "userPromptTemplate": "Analyze this support case and identify: 1) Root cause 2) Urgency level 3) Recommended resolution. Case: {{record}}"
+          },
+          "response": {
+            "success": true,
+            "message": "Pipeline triggered successfully",
+            "runId": "c3d4e5f6-a7b8-9012-cdef-345678901234",
+            "pipelineName": "DynamicSalesforceExtractPipeline",
+            "dataFactoryName": "insightflow-dynamic-adf-poc",
+            "timestamp": "2026-01-27T12:10:00.000Z",
+            "parameters": {
+              "objectApiName": "Case",
+              "fieldNames": "Id,Subject,Description,Status,Priority",
+              "whereClause": "Status != 'Closed'"
+            },
+            "customPrompts": {
+              "systemPromptProvided": true,
+              "userPromptTemplateProvided": true,
+              "configSaved": true
+            }
+          }
+        },
+        {
+          "name": "Dynamic Pipeline - Custom Object",
+          "description": "Extract from custom Salesforce object",
+          "curl": "curl -X POST \"https://<function-app-name>.azurewebsites.net/api/triggerpipeline?code=<function-key>\" -H \"Content-Type: application/json\" -d '{\"objectApiName\": \"callreport__c\", \"fieldNames\": \"Id,Name,Description__c,Status__c,CreatedDate\"}'",
+          "request": {
+            "objectApiName": "callreport__c",
+            "fieldNames": "Id,Name,Description__c,Status__c,CreatedDate"
+          },
+          "response": {
+            "success": true,
+            "message": "Pipeline triggered successfully",
+            "runId": "d4e5f6a7-b8c9-0123-def4-567890123456",
+            "pipelineName": "DynamicSalesforceExtractPipeline",
+            "dataFactoryName": "insightflow-dynamic-adf-poc",
+            "timestamp": "2026-01-27T12:15:00.000Z",
+            "parameters": {
+              "objectApiName": "callreport__c",
+              "fieldNames": "Id,Name,Description__c,Status__c,CreatedDate",
+              "whereClause": ""
+            }
+          }
+        }
+      ]
+    },
+    "checkPipelineStatus": {
+      "description": "Check the status of a pipeline run",
+      "method": "GET",
+      "url": "/api/checkpipelinestatus",
+      "examples": [
+        {
+          "name": "Check Pipeline Status",
+          "description": "Get the current status of a pipeline run",
+          "curl": "curl \"https://<function-app-name>.azurewebsites.net/api/checkpipelinestatus?code=<function-key>&runId=87185314-aba9-45f8-a441-00451799102d\"",
+          "queryParams": {
+            "runId": "87185314-aba9-45f8-a441-00451799102d",
+            "factoryName": "(optional) specify factory name if different from default"
+          },
+          "response_in_progress": {
+            "success": true,
+            "runId": "87185314-aba9-45f8-a441-00451799102d",
+            "pipelineName": "SalesforceCallReportPipeline",
+            "dataFactoryName": "insightflow-adf-xxxxx",
+            "status": "InProgress",
+            "message": "",
+            "runStart": "2026-01-27T11:58:43.733Z",
+            "runEnd": null,
+            "durationInMs": null,
+            "parameters": {
+              "sourceObject": "callreport__c",
+              "startDate": "LAST_N_DAYS:30"
+            }
+          },
+          "response_succeeded": {
+            "success": true,
+            "runId": "87185314-aba9-45f8-a441-00451799102d",
+            "pipelineName": "SalesforceCallReportPipeline",
+            "dataFactoryName": "insightflow-adf-xxxxx",
+            "status": "Succeeded",
+            "message": "",
+            "runStart": "2026-01-27T11:58:43.733Z",
+            "runEnd": "2026-01-27T11:59:12.808Z",
+            "durationInMs": 29075,
+            "parameters": {
+              "sourceObject": "callreport__c",
+              "startDate": "LAST_N_DAYS:30"
+            }
+          },
+          "response_failed": {
+            "success": true,
+            "runId": "87185314-aba9-45f8-a441-00451799102d",
+            "pipelineName": "SalesforceCallReportPipeline",
+            "dataFactoryName": "insightflow-adf-xxxxx",
+            "status": "Failed",
+            "message": "Error details here",
+            "runStart": "2026-01-27T11:58:43.733Z",
+            "runEnd": "2026-01-27T11:59:00.000Z",
+            "durationInMs": 16267,
+            "parameters": {}
+          }
+        }
+      ]
+    }
+  },
+  "requestParameters": {
+    "triggerPipeline": {
+      "objectApiName": {
+        "type": "string",
+        "required": "Required for dynamic pipeline",
+        "description": "Salesforce object API name (e.g., Account, Contact, Opportunity, Case, or custom objects like callreport__c)"
+      },
+      "fieldNames": {
+        "type": "string",
+        "required": "Required for dynamic pipeline",
+        "description": "Comma-separated list of field API names to extract (e.g., 'Id,Name,Description,CreatedDate')"
+      },
+      "whereClause": {
+        "type": "string",
+        "required": false,
+        "description": "SOQL WHERE clause without 'WHERE' keyword (e.g., 'CreatedDate >= LAST_N_DAYS:30')"
+      },
+      "systemPrompt": {
+        "type": "string",
+        "required": false,
+        "description": "Custom system prompt for AI analysis. Must mention 'JSON' for response_format to work."
+      },
+      "userPromptTemplate": {
+        "type": "string",
+        "required": false,
+        "description": "Custom user prompt template. Use {{record}} as placeholder for the record data."
+      }
+    },
+    "checkPipelineStatus": {
+      "runId": {
+        "type": "string",
+        "required": true,
+        "description": "Pipeline run ID returned from triggerPipeline"
+      },
+      "factoryName": {
+        "type": "string",
+        "required": false,
+        "description": "Data Factory name (defaults to the main factory)"
+      }
+    }
+  },
+  "pipelineStatuses": {
+    "Queued": "Pipeline run is queued and waiting to start",
+    "InProgress": "Pipeline is currently running",
+    "Succeeded": "Pipeline completed successfully",
+    "Failed": "Pipeline failed - check message for details",
+    "Cancelling": "Pipeline is being cancelled",
+    "Cancelled": "Pipeline was cancelled"
+  },
+  "errorResponses": {
+    "400": {
+      "description": "Bad Request - Missing required parameters",
+      "example": {
+        "success": false,
+        "error": "runId parameter is required"
+      }
+    },
+    "401": {
+      "description": "Unauthorized - Missing or invalid function key",
+      "note": "Add ?code=<function-key> to URL or x-functions-key header"
+    },
+    "500": {
+      "description": "Internal Server Error",
+      "example": {
+        "success": false,
+        "error": "Missing required environment variables: AZURE_SUBSCRIPTION_ID, AZURE_RESOURCE_GROUP, or DATA_FACTORY_NAME"
+      }
+    }
+  }
+}

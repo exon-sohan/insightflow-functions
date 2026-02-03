@@ -1,6 +1,6 @@
 /**
- * Storage Blob Trigger - Batch API Version
- * Submits call records to Azure OpenAI Batch API for processing (50% cost savings)
+ * InsightFlow - Storage Blob Trigger
+ * Submits data to Azure OpenAI Batch API with dynamic prompts
  */
 
 const { app } = require("@azure/functions");
@@ -10,89 +10,68 @@ const batchJobStorage = require("./batchJobStorage");
 
 const AZURE_OPENAI_ENDPOINT = process.env.AZURE_AI_PROJECT_ENDPOINT;
 const AZURE_OPENAI_DEPLOYMENT = process.env.AZURE_OPENAI_DEPLOYMENT_NAME;
-// Batch deployment must be GlobalBatch SKU - different from standard deployment
 const AZURE_OPENAI_BATCH_DEPLOYMENT = process.env.AZURE_OPENAI_BATCH_DEPLOYMENT_NAME || "gpt-4o-mini-batch";
 const AZURE_OPENAI_API_KEY = process.env.AZURE_OPENAI_API_KEY;
-const STORAGE_CONNECTION_STRING =
-  process.env.AZURE_STORAGE_CONNECTION_STRING ||
-  process.env.AzureWebJobsStorage;
-const OUTPUT_CONTAINER = process.env.OUTPUT_CONTAINER || "output";
-const PROMPT_CONFIG_CONTAINER = "prompt-configs";
+const STORAGE_CONNECTION_STRING = process.env.AZURE_STORAGE_CONNECTION_STRING || process.env.AzureWebJobsStorage;
+const CONFIG_CONTAINER = "pipeline-configs";
 
-/* ───────────────────────────────────────────────────────────── */
-/* LOGGER */
-/* ───────────────────────────────────────────────────────────── */
-function logger(context) {
-  return {
-    info: (msg, data) => context.log(`[INFO] ${msg}`, data ?? ""),
-    success: (msg, data) => context.log(`[SUCCESS] ${msg}`, data ?? ""),
-    warn: (msg, data) => context.warn(`[WARN] ${msg}`, data ?? ""),
-    error: (msg, err) =>
-      context.error(`[ERROR] ${msg}`, err?.stack || err || ""),
-    debug: (msg, data) => context.log(`[DEBUG] ${msg}`, data ?? ""),
-  };
-}
+// Preset configurations
+const PRESETS = {
+  "sales-call": {
+    insights: ["summary", "sentiment", "products", "upsellOpportunity", "competitors", "nextSteps"],
+    systemPrompt: "You analyze sales call records. Output only valid JSON.",
+  },
+  "support-ticket": {
+    insights: ["summary", "sentiment", "escalationRisk", "technicalIssues", "resolution", "followUp"],
+    systemPrompt: "You analyze support tickets. Output only valid JSON.",
+  },
+  "feedback": {
+    insights: ["summary", "sentiment", "npsIndicator", "themes", "suggestions"],
+    systemPrompt: "You analyze customer feedback. Output only valid JSON.",
+  },
+  "compliance": {
+    insights: ["summary", "riskLevel", "violations", "recommendations"],
+    systemPrompt: "You analyze records for compliance issues. Output only valid JSON.",
+  },
+  "general": {
+    insights: ["summary", "sentiment", "keyPoints", "actionItems"],
+    systemPrompt: "You analyze business records. Output only valid JSON.",
+  },
+};
 
-/* ───────────────────────────────────────────────────────────── */
-/* BLOB TRIGGER - Submit Batch Job */
-/* ───────────────────────────────────────────────────────────── */
+/* ─────────────────────────────────────────────────────────────── */
+/* BLOB TRIGGER - Process datasets and submit to Batch API         */
+/* ─────────────────────────────────────────────────────────────── */
 app.storageBlob("storageBlobTrigger", {
   path: "datasets/{name}",
   connection: "AzureWebJobsStorage",
   handler: async (blob, context) => {
-    const log = logger(context);
     const fileName = context.triggerMetadata.name;
     const startTime = Date.now();
 
-    log.info("════════════════════════════════════════════");
-    log.info("Batch API Submit - Blob trigger fired");
-    log.info(`File name: ${fileName}`);
-    log.info(`File size: ${blob.length} bytes`);
-    log.info("════════════════════════════════════════════");
+    context.log(`Blob trigger fired: ${fileName}`);
 
     try {
       // Parse records
-      log.info("Parsing blob content");
       const content = blob.toString("utf8");
-      const records = parseCallRecords(content);
-      log.info(`Parsed ${records.length} record(s)`);
+      const records = parseRecords(content);
+      context.log(`Parsed ${records.length} records`);
 
       if (records.length === 0) {
-        log.warn("No records found in file, skipping");
+        context.log("No records found, skipping");
         return;
       }
 
-      // Try to load custom prompt config based on the file path
-      // File path is like "ObjectName/ObjectName_timestamp.json"
-      let promptConfig = null;
-      try {
-        const objectNameFromPath = fileName.split("/")[0] || fileName.split("_")[0];
-        if (objectNameFromPath) {
-          promptConfig = await loadPromptConfig(objectNameFromPath.toLowerCase(), log);
-          if (promptConfig) {
-            log.info(`Loaded custom prompt config for object: ${objectNameFromPath}`);
-          }
-        }
-      } catch (configError) {
-        log.debug("No custom prompt config found, using defaults");
-      }
+      // Load config based on object name from file path
+      const objectName = extractObjectName(fileName);
+      const config = await loadConfig(objectName, context);
 
       // Validate Azure OpenAI config
-      if (!AZURE_OPENAI_ENDPOINT) {
-        throw new Error("AZURE_AI_PROJECT_ENDPOINT environment variable is not set");
-      }
-      if (!AZURE_OPENAI_BATCH_DEPLOYMENT) {
-        throw new Error("AZURE_OPENAI_BATCH_DEPLOYMENT_NAME environment variable is not set");
-      }
-      if (!AZURE_OPENAI_API_KEY) {
-        throw new Error("AZURE_OPENAI_API_KEY environment variable is not set");
+      if (!AZURE_OPENAI_ENDPOINT || !AZURE_OPENAI_API_KEY) {
+        throw new Error("Azure OpenAI not configured");
       }
 
-      // Initialize Azure OpenAI client
-      log.info("Initializing Azure OpenAI client");
-      log.info(`Endpoint: ${AZURE_OPENAI_ENDPOINT}`);
-      log.info(`Batch Deployment: ${AZURE_OPENAI_BATCH_DEPLOYMENT}`);
-
+      // Initialize OpenAI client
       const openAIClient = new AzureOpenAI({
         endpoint: AZURE_OPENAI_ENDPOINT,
         apiKey: AZURE_OPENAI_API_KEY,
@@ -100,73 +79,56 @@ app.storageBlob("storageBlobTrigger", {
         apiVersion: "2024-10-21",
       });
 
-      // Create JSONL content for batch API
-      log.info("Creating JSONL batch input file");
-      const jsonlContent = createBatchJsonl(records, AZURE_OPENAI_BATCH_DEPLOYMENT, promptConfig);
+      // Create JSONL for batch API
+      const jsonlContent = createBatchJsonl(records, config, objectName);
 
-      // Upload JSONL file to Azure OpenAI
-      log.info("Uploading batch input file to Azure OpenAI");
+      // Upload to Azure OpenAI
       const inputFile = await uploadBatchFile(openAIClient, jsonlContent, fileName);
-      log.success(`Batch input file uploaded: ${inputFile.id}`);
+      context.log(`Batch input uploaded: ${inputFile.id}`);
 
       // Create batch job
-      log.info("Creating batch job");
       const batch = await openAIClient.batches.create({
         input_file_id: inputFile.id,
         endpoint: "/chat/completions",
         completion_window: "24h",
       });
-      log.success(`Batch job created: ${batch.id}`);
+      context.log(`Batch job created: ${batch.id}`);
 
-      // Store batch job info for status checker
+      // Save job for tracking
       await batchJobStorage.createBatchJob({
         batchId: batch.id,
         inputFileId: inputFile.id,
         inputBlobPath: `datasets/${fileName}`,
         recordCount: records.length,
+        objectName,
+        config,
       });
-      log.success("Batch job saved to tracking storage");
 
-      log.success("Batch submission completed", {
-        batchId: batch.id,
-        recordCount: records.length,
-        durationMs: Date.now() - startTime,
-      });
+      context.log(`Batch submitted successfully in ${Date.now() - startTime}ms`);
     } catch (err) {
-      log.error("Batch submission failed", err);
+      context.error(`Batch submission failed:`, err);
       throw err;
     }
   },
 });
 
-/* ───────────────────────────────────────────────────────────── */
-/* CREATE JSONL FOR BATCH API */
-/* ───────────────────────────────────────────────────────────── */
-function createBatchJsonl(records, deploymentName, promptConfig = null) {
+/* ─────────────────────────────────────────────────────────────── */
+/* CREATE JSONL FOR BATCH API                                      */
+/* ─────────────────────────────────────────────────────────────── */
+function createBatchJsonl(records, config, objectName) {
   const lines = records.map((record, index) => {
     const recordId = record.Id || record.Name || `record-${index}`;
-
-    // Use custom prompts if provided, otherwise use defaults
-    let systemPromptContent = promptConfig?.systemPrompt || getSystemPrompt();
-    const userPromptContent = promptConfig?.userPromptTemplate
-      ? buildCustomUserPrompt(record, promptConfig.userPromptTemplate, promptConfig.fieldNames)
-      : getUserPrompt(record);
-
-    // Ensure "JSON" appears in the prompts (required for response_format: json_object)
-    const hasJsonMention = (systemPromptContent + userPromptContent).toLowerCase().includes('json');
-    if (!hasJsonMention) {
-      systemPromptContent += "\n\nIMPORTANT: You must respond with a valid JSON object.";
-    }
+    const { systemPrompt, userPrompt } = buildPrompts(record, config, objectName);
 
     const request = {
       custom_id: recordId,
       method: "POST",
-      url: "/v1/chat/completions",  // Must use /v1/ prefix for Azure OpenAI Batch API
+      url: "/v1/chat/completions",
       body: {
-        model: deploymentName,
+        model: AZURE_OPENAI_BATCH_DEPLOYMENT,
         messages: [
-          { role: "system", content: systemPromptContent },
-          { role: "user", content: userPromptContent },
+          { role: "system", content: systemPrompt },
+          { role: "user", content: userPrompt },
         ],
         temperature: 0.3,
         max_tokens: 4000,
@@ -180,291 +142,206 @@ function createBatchJsonl(records, deploymentName, promptConfig = null) {
   return lines.join("\n");
 }
 
-/* ───────────────────────────────────────────────────────────── */
-/* BUILD CUSTOM USER PROMPT WITH DYNAMIC FIELDS */
-/* ───────────────────────────────────────────────────────────── */
-function buildCustomUserPrompt(record, userPromptTemplate, fieldNames) {
-  // Replace {{fieldName}} placeholders with actual values from the record
-  let prompt = userPromptTemplate;
+/* ─────────────────────────────────────────────────────────────── */
+/* BUILD PROMPTS BASED ON CONFIG                                   */
+/* ─────────────────────────────────────────────────────────────── */
+function buildPrompts(record, config, objectName) {
+  const analysis = config?.analysis || {};
 
-  // Replace all {{fieldName}} placeholders
-  const fieldList = fieldNames ? fieldNames.split(",").map(f => f.trim()) : [];
+  // Custom prompts with explicit systemPrompt/userPromptTemplate
+  if (analysis.type === "custom" && analysis.systemPrompt) {
+    let systemPrompt = analysis.systemPrompt || "You analyze records. Output only valid JSON.";
+    let userPrompt = analysis.userPromptTemplate || "Analyze: {{RECORD_DATA}}";
 
-  // Build a record data section with all available fields
-  let recordDataSection = "=== RECORD DATA ===\n";
-  for (const field of fieldList) {
-    const value = record[field] !== undefined ? record[field] : "N/A";
-    recordDataSection += `${field}: ${value}\n`;
-    // Also replace specific placeholders like {{Id}}, {{Name}}, etc.
-    prompt = prompt.replace(new RegExp(`\\{\\{${field}\\}\\}`, 'g'), value || "N/A");
+    // Ensure JSON is mentioned
+    if (!(systemPrompt + userPrompt).toLowerCase().includes("json")) {
+      systemPrompt += "\n\nIMPORTANT: Respond with valid JSON only.";
+    }
+
+    // Replace placeholders
+    userPrompt = replacePlaceholders(userPrompt, record, config?.source?.fields);
+
+    return { systemPrompt, userPrompt };
   }
 
-  // Also add all record fields for flexibility
-  for (const [key, value] of Object.entries(record)) {
-    prompt = prompt.replace(new RegExp(`\\{\\{${key}\\}\\}`, 'g'), value || "N/A");
+  // If a custom schema is provided, use it to build the prompt
+  if (analysis.schema && Object.keys(analysis.schema).length > 0) {
+    const schemaDescription = buildSchemaDescription(analysis.schema);
+    const preset = PRESETS[analysis.preset] || PRESETS["general"];
+
+    const systemPrompt = `${preset.systemPrompt}
+
+You must return a JSON object with this exact structure:
+
+${schemaDescription}
+
+IMPORTANT:
+- Follow the exact field names and types specified above
+- Use null for missing or uncertain data
+- For enum fields, only use the allowed values
+- For arrays, return empty array [] if no items
+- Be precise and do not hallucinate information`;
+
+    const userPrompt = `Analyze this ${objectName} record:
+
+${formatRecordData(record)}
+
+Return a JSON object following the schema described in the system prompt.`;
+
+    return { systemPrompt, userPrompt };
   }
 
-  // Replace {{RECORD_DATA}} placeholder with the full record data section
-  prompt = prompt.replace(/\{\{RECORD_DATA\}\}/g, recordDataSection);
+  // Fallback to preset prompts
+  const preset = PRESETS[analysis.preset] || PRESETS["general"];
+  const insights = analysis.insights || preset.insights;
 
-  // Replace {{RECORD_JSON}} with the full JSON record
-  prompt = prompt.replace(/\{\{RECORD_JSON\}\}/g, JSON.stringify(record, null, 2));
+  const systemPrompt = `${preset.systemPrompt}
 
-  return prompt;
+You must return a JSON object with these fields:
+${insights.map((i) => `- ${i}`).join("\n")}
+
+Be precise. Use null for missing data. Do not hallucinate.`;
+
+  const userPrompt = `Analyze this ${objectName} record:
+
+${formatRecordData(record)}
+
+Return a JSON object with: ${insights.join(", ")}`;
+
+  return { systemPrompt, userPrompt };
 }
 
-/* ───────────────────────────────────────────────────────────── */
-/* LOAD PROMPT CONFIG FROM BLOB STORAGE */
-/* ───────────────────────────────────────────────────────────── */
-async function loadPromptConfig(objectName, log) {
+/* ─────────────────────────────────────────────────────────────── */
+/* BUILD SCHEMA DESCRIPTION FROM CONFIG                            */
+/* ─────────────────────────────────────────────────────────────── */
+function buildSchemaDescription(schema) {
+  const lines = [];
+
+  for (const [fieldName, fieldConfig] of Object.entries(schema)) {
+    lines.push(describeField(fieldName, fieldConfig, 0));
+  }
+
+  return lines.join("\n\n");
+}
+
+function describeField(name, config, indent = 0) {
+  const prefix = "  ".repeat(indent);
+  const lines = [];
+
+  if (config.type === "flags") {
+    lines.push(`${prefix}${name}: object with boolean flags:`);
+    for (const flag of config.fields || []) {
+      lines.push(`${prefix}  - ${flag}: boolean`);
+    }
+  } else if (config.type === "object" && config.fields) {
+    lines.push(`${prefix}${name}: object with fields:`);
+    for (const [subName, subConfig] of Object.entries(config.fields)) {
+      lines.push(describeField(subName, subConfig, indent + 1));
+    }
+  } else if (config.type === "array" && config.itemType === "object" && config.itemFields) {
+    lines.push(`${prefix}${name}: array of objects, each with:`);
+    for (const [subName, subConfig] of Object.entries(config.itemFields)) {
+      lines.push(describeField(subName, subConfig, indent + 1));
+    }
+  } else if (config.type === "array") {
+    lines.push(`${prefix}${name}: array of ${config.itemType || "string"}s`);
+  } else if (config.type === "enum") {
+    const options = config.options || "value";
+    lines.push(`${prefix}${name}: string, one of [${options.split("|").join(", ")}]`);
+  } else if (config.type === "boolean") {
+    lines.push(`${prefix}${name}: boolean`);
+  } else if (config.type === "number") {
+    const desc = config.description ? ` (${config.description})` : "";
+    lines.push(`${prefix}${name}: number${desc}`);
+  } else {
+    const desc = config.description ? ` - ${config.description}` : "";
+    lines.push(`${prefix}${name}: string${desc}`);
+  }
+
+  return lines.join("\n");
+}
+
+/* ─────────────────────────────────────────────────────────────── */
+/* HELPERS                                                         */
+/* ─────────────────────────────────────────────────────────────── */
+function replacePlaceholders(template, record, fields) {
+  let result = template;
+
+  // Replace {{fieldName}} with actual values
+  for (const [key, value] of Object.entries(record)) {
+    result = result.replace(new RegExp(`\\{\\{${key}\\}\\}`, "gi"), value || "N/A");
+  }
+
+  // Replace {{RECORD_DATA}}
+  result = result.replace(/\{\{RECORD_DATA\}\}/gi, formatRecordData(record));
+
+  // Replace {{RECORD_JSON}}
+  result = result.replace(/\{\{RECORD_JSON\}\}/gi, JSON.stringify(record, null, 2));
+
+  return result;
+}
+
+function formatRecordData(record) {
+  return Object.entries(record)
+    .map(([key, value]) => `${key}: ${value || "N/A"}`)
+    .join("\n");
+}
+
+function extractObjectName(fileName) {
+  // File path: "ObjectName__c/ObjectName__c_timestamp.json" or "ObjectName__c_timestamp.json"
+  // We need to preserve the full object name including __c suffix
+  const parts = fileName.split("/");
+  const folderOrFile = parts[0] || fileName;
+
+  // If it's a folder path, use the folder name
+  // If it contains a timestamp pattern (_YYYYMMDD_), extract before that
+  const timestampMatch = folderOrFile.match(/^(.+?)_\d{8}_/);
+  if (timestampMatch) {
+    return timestampMatch[1].toLowerCase();
+  }
+
+  // Otherwise use the folder/file name as-is (without extension)
+  return folderOrFile.replace(/\.json$/i, '').toLowerCase();
+}
+
+async function loadConfig(objectName, context) {
   try {
-    const blobServiceClient = BlobServiceClient.fromConnectionString(STORAGE_CONNECTION_STRING);
-    const containerClient = blobServiceClient.getContainerClient(PROMPT_CONFIG_CONTAINER);
-
-    const configBlobName = `${objectName}_config.json`;
-    const blockBlobClient = containerClient.getBlockBlobClient(configBlobName);
-
-    // Check if blob exists
-    const exists = await blockBlobClient.exists();
-    if (!exists) {
+    if (!STORAGE_CONNECTION_STRING) {
+      context.log(`No storage connection string, skipping config load`);
       return null;
     }
 
-    // Download and parse config
-    const downloadResponse = await blockBlobClient.download(0);
-    const configContent = await streamToString(downloadResponse.readableStreamBody);
-    const config = JSON.parse(configContent);
+    const blobServiceClient = BlobServiceClient.fromConnectionString(STORAGE_CONNECTION_STRING);
+    const containerClient = blobServiceClient.getContainerClient(CONFIG_CONTAINER);
+    const blobName = `${objectName}_config.json`;
+    context.log(`Looking for config: ${CONFIG_CONTAINER}/${blobName}`);
 
-    log.info(`Loaded prompt config: systemPrompt=${!!config.systemPrompt}, userPromptTemplate=${!!config.userPromptTemplate}`);
+    const blobClient = containerClient.getBlockBlobClient(blobName);
+
+    if (!(await blobClient.exists())) {
+      context.log(`No config found for ${objectName}, using defaults`);
+      return null;
+    }
+
+    const downloadResponse = await blobClient.download(0);
+    const content = await streamToString(downloadResponse.readableStreamBody);
+    const config = JSON.parse(content);
+    context.log(`Config loaded successfully, has schema: ${!!config?.analysis?.schema}`);
     return config;
-  } catch (error) {
-    log.debug(`Failed to load prompt config for ${objectName}: ${error.message}`);
+  } catch (err) {
+    context.error(`Failed to load config: ${err.message}`);
     return null;
   }
 }
 
-async function streamToString(readableStream) {
-  return new Promise((resolve, reject) => {
-    const chunks = [];
-    readableStream.on("data", (data) => chunks.push(data.toString()));
-    readableStream.on("end", () => resolve(chunks.join("")));
-    readableStream.on("error", reject);
-  });
-}
-
-/* ───────────────────────────────────────────────────────────── */
-/* UPLOAD BATCH FILE TO AZURE OPENAI */
-/* ───────────────────────────────────────────────────────────── */
-async function uploadBatchFile(openAIClient, jsonlContent, originalFileName) {
-  const blob = new Blob([jsonlContent], { type: "application/jsonl" });
-  const file = new File([blob], `batch_input_${originalFileName}.jsonl`, {
-    type: "application/jsonl",
-  });
-
-  const uploadedFile = await openAIClient.files.create({
-    file: file,
-    purpose: "batch",
-  });
-
-  return uploadedFile;
-}
-
-/* ───────────────────────────────────────────────────────────── */
-/* PROMPTS */
-/* ───────────────────────────────────────────────────────────── */
-function getSystemPrompt() {
-  return `You are an AI assistant specialized in analyzing customer call records for leadership reporting.
-
-RULES:
-- Output ONLY valid JSON (no markdown, no explanations)
-- Do NOT hallucinate or infer information not present in the data
-- Use null, false, or [] if data is missing or unclear
-- Be precise and factual`;
-}
-
-function getUserPrompt(record) {
-  return `Analyze the following call record and generate structured insights for leadership reporting.
-
-=== CALL RECORD ===
-Record ID: ${record.Id || "N/A"}
-Name: ${record.Name || "N/A"}
-Call Details:
-${record.calldetails__c || "N/A"}
-
-Call Highlights:
-${stripHtml(record.callhighlights__c || "")}
-
-Description: ${record.Description__c || "N/A"}
-Status: ${record.Status__c || "N/A"}
-Created Date: ${record.CreatedDate || "N/A"}
-
-=== REQUIRED OUTPUT ===
-{
-  "callSummary": "2-4 sentence executive-ready summary",
-
-  "flags": {
-    "hasProductMention": false,
-    "hasQualityComplaint": false,
-    "hasDeliveryComplaint": false,
-    "hasEscalationRisk": false,
-    "hasCompetitorMention": false,
-    "hasUpsellOpportunity": false,
-    "hasComplianceIssue": false,
-    "hasActionItem": false,
-    "hasFeatureRequest": false,
-    "hasPricingConcern": false,
-    "hasTechnicalIssue": false
-  },
-
-  "sentiment": {
-    "score": "Positive" | "Neutral" | "Negative",
-    "confidence": 0.0,
-    "trend": "Improving" | "Stable" | "Worsening",
-    "emotion": "Calm" | "Frustrated" | "Angry" | "Satisfied" | "Anxious" | null,
-    "reason": "Brief explanation"
-  },
-
-  "customerIntent": {
-    "primary": "Support" | "Complaint" | "Inquiry" | "Purchase" | "Renewal" | "Cancellation" | "Feedback",
-    "secondary": [],
-    "confidence": 0.0
-  },
-
-  "businessImpact": {
-    "revenueImpact": "None" | "Low" | "Medium" | "High",
-    "churnRisk": "Low" | "Medium" | "High",
-    "accountHealth": "Healthy" | "At Risk" | "Critical",
-    "reason": "Explanation"
-  },
-
-  "products": {
-    "mentioned": [],
-    "primary": null,
-    "context": "Positive" | "Negative" | "Inquiry" | null
-  },
-
-  "qualityComplaint": {
-    "detected": false,
-    "category": "Defect" | "Performance" | "Durability" | "Functionality" | null,
-    "severity": "Critical" | "Major" | "Minor" | null,
-    "details": null
-  },
-
-  "deliveryComplaint": {
-    "detected": false,
-    "category": "Late Delivery" | "Damaged" | "Wrong Item" | "Missing Item" | "Tracking Issues" | null,
-    "severity": "Critical" | "Major" | "Minor" | null,
-    "details": null
-  },
-
-  "technicalIssue": {
-    "detected": false,
-    "category": "Bug" | "Integration" | "Performance" | "Compatibility" | "Configuration" | "Security" | null,
-    "severity": "Critical" | "Major" | "Minor" | null,
-    "details": null
-  },
-
-  "pricingConcern": {
-    "detected": false,
-    "type": "Too Expensive" | "Competitor Pricing" | "Discount Request" | "Value Perception" | "Contract Terms" | null,
-    "severity": "Critical" | "Major" | "Minor" | null,
-    "details": null
-  },
-
-  "featureRequest": {
-    "detected": false,
-    "feature": null,
-    "priority": "High" | "Medium" | "Low" | null,
-    "productArea": null,
-    "details": null
-  },
-
-  "competitorMention": {
-    "detected": false,
-    "competitors": [],
-    "context": "Pricing" | "Features" | "Service" | "Switching" | null
-  },
-
-  "upsellOpportunity": {
-    "detected": false,
-    "products": [],
-    "estimatedValue": "Low" | "Medium" | "High" | null,
-    "reason": null
-  },
-
-  "escalationRisk": {
-    "level": "High" | "Medium" | "Low",
-    "reason": "Explanation",
-    "accountAtRisk": false
-  },
-
-  "complianceRisk": {
-    "detected": false,
-    "type": "Data Privacy" | "Financial" | "Regulatory" | "Contractual" | null,
-    "severity": "Critical" | "Major" | "Minor" | null,
-    "details": null
-  },
-
-  "callQuality": {
-    "clarity": 0.0,
-    "agentEmpathy": 0.0,
-    "issueUnderstanding": 0.0,
-    "resolutionEffectiveness": 0.0,
-    "notes": null
-  },
-
-  "actionItems": [
-    {
-      "action": "What needs to be done",
-      "priority": "High" | "Medium" | "Low",
-      "owner": "Sales" | "Support" | "Technical" | "Management",
-      "dueInDays": 0,
-      "customerVisible": false,
-      "blockingIssue": false
-    }
-  ],
-
-  "followUp": {
-    "required": false,
-    "recommendedDate": null,
-    "reason": null,
-    "preferredChannel": "Call" | "Email" | "WhatsApp" | "In-App" | null
-  },
-
-  "resolutionStatus": "Resolved" | "Pending" | "Escalated" | "Requires Follow-up",
-
-  "keyTopics": [
-    { "topic": "Topic", "category": "General", "importance": "High" }
-  ],
-
-  "analysisMeta": {
-    "confidenceScore": 0.0,
-    "missingInformation": [],
-    "assumptionsMade": []
-  }
-}`;
-}
-
-/* ───────────────────────────────────────────────────────────── */
-/* HELPERS */
-/* ───────────────────────────────────────────────────────────── */
-function parseCallRecords(content) {
-  // Remove BOM if present
-  const cleanContent = content.replace(/^\uFEFF/, "").trim();
-
-  // Try parsing as JSON array first
+function parseRecords(content) {
+  const clean = content.replace(/^\uFEFF/, "").trim();
   try {
-    const parsed = JSON.parse(cleanContent);
-    if (Array.isArray(parsed)) {
-      return parsed;
-    }
-    // Single object
-    return [parsed];
+    const parsed = JSON.parse(clean);
+    return Array.isArray(parsed) ? parsed : [parsed];
   } catch {
-    // Fall back to NDJSON (newline-delimited JSON)
-    return cleanContent
+    return clean
       .split("\n")
-      .map((l) => l.trim())
       .filter(Boolean)
       .map((line) => {
         try {
@@ -477,9 +354,17 @@ function parseCallRecords(content) {
   }
 }
 
-function stripHtml(html) {
-  return html
-    .replace(/<[^>]*>/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
+async function uploadBatchFile(client, jsonlContent, originalFileName) {
+  const blob = new Blob([jsonlContent], { type: "application/jsonl" });
+  const file = new File([blob], `batch_${originalFileName}.jsonl`, { type: "application/jsonl" });
+  return client.files.create({ file, purpose: "batch" });
+}
+
+async function streamToString(stream) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    stream.on("data", (d) => chunks.push(d.toString()));
+    stream.on("end", () => resolve(chunks.join("")));
+    stream.on("error", reject);
+  });
 }
